@@ -2,6 +2,10 @@ package ua.cn.stu.main;
 
 import ch.unibas.medizin.dynamicreports.report.builder.VariableBuilder;
 import ch.unibas.medizin.dynamicreports.report.builder.column.TextColumnBuilder;
+import ch.unibas.medizin.dynamicreports.report.builder.crosstab.CrosstabBuilder;
+import ch.unibas.medizin.dynamicreports.report.builder.crosstab.CrosstabColumnGroupBuilder;
+import ch.unibas.medizin.dynamicreports.report.builder.crosstab.CrosstabMeasureBuilder;
+import ch.unibas.medizin.dynamicreports.report.builder.crosstab.CrosstabRowGroupBuilder;
 import ch.unibas.medizin.dynamicreports.report.constant.Calculation;
 import com.intellij.uiDesigner.core.GridConstraints;
 import com.intellij.uiDesigner.core.GridLayoutManager;
@@ -24,7 +28,7 @@ import java.math.BigDecimal;
 import java.sql.Timestamp;
 import java.text.ParseException;
 import java.text.SimpleDateFormat;
-import java.util.Date;
+import java.util.*;
 import java.util.List;
 
 import static ch.unibas.medizin.dynamicreports.report.builder.DynamicReports.*;
@@ -140,6 +144,20 @@ public class DatabaseExplorer extends JFrame {
             @Override
             public void actionPerformed(ActionEvent e) {
                 generateLibrarianSimpleReport();
+            }
+        });
+
+        statisticReportButton.addActionListener(new ActionListener() {
+            @Override
+            public void actionPerformed(ActionEvent e) {
+                generateHallLoanStatisticReport();
+            }
+        });
+
+        crossReportButton.addActionListener(new ActionListener() {
+            @Override
+            public void actionPerformed(ActionEvent e) {
+                generateHallActivityCrosstabReport();
             }
         });
     }
@@ -583,6 +601,129 @@ public class DatabaseExplorer extends JFrame {
         }
     }
 
+    private List<HallBookStats> getHallBookStatsList() {
+        JdbcTemplate jdbcTemplate = new JdbcTemplate(dataSource);
+        String query = "SELECT " +
+                "   h.name AS hallName, " +
+                "   COUNT(DISTINCT b.book_id) AS uniqueBookCount, " +
+                "   COUNT(l.loan_id) AS loanCount " +
+                "FROM " +
+                "   hall h " +
+                "LEFT JOIN book b ON h.hall_id = b.hall_id " +
+                "LEFT JOIN loan l ON b.book_id = l.book_id " +
+                "GROUP BY h.hall_id, h.name " +
+                "ORDER BY h.name;";
+        return jdbcTemplate.query(query, new HallBookStatsMapper());
+    }
+
+    private Integer getTotalUniqueBookCountInLibrary() {
+        JdbcTemplate jdbcTemplate = new JdbcTemplate(dataSource);
+        String query = "SELECT COUNT(DISTINCT book_id) FROM book";
+        return jdbcTemplate.queryForObject(query, Integer.class);
+    }
+
+    private void generateHallLoanStatisticReport() {
+        try {
+            List<HallBookStats> statsList = getHallBookStatsList();
+            JRDataSource jrDataSource = new JRBeanCollectionDataSource(statsList);
+
+            TextColumnBuilder<String> hallNameColumn = col.column("Hall", "hallName", type.stringType());
+            TextColumnBuilder<Integer> uniqueBookCountColumn = col.column("Unique Titles", "uniqueBookCount", type.integerType());
+            TextColumnBuilder<Integer> loanCountColumn = col.column("Total Loans", "loanCount", type.integerType());
+
+            VariableBuilder<Integer> totalLoansVar = variable(loanCountColumn, Calculation.SUM);
+            VariableBuilder<Integer> totalUniqueBooksVar = variable(uniqueBookCountColumn, Calculation.SUM);
+
+            report()
+                    .setColumnTitleStyle(Templates.columnTitleStyle)
+                    .variables(totalLoansVar, totalUniqueBooksVar)
+                    .columns(
+                            hallNameColumn,
+                            uniqueBookCountColumn,
+                            loanCountColumn
+                    )
+                    .title(cmp.text("Statistical Report: Hall Activity").setStyle(Templates.boldCenteredStyle))
+                    .pageFooter(cmp.pageXofY())
+                    .summary(
+                            cmp.verticalGap(20),
+                            cmp.line(),
+                            cmp.verticalGap(10),
+                            cmp.horizontalList(
+                                    cmp.text("Total unique books in library:").setStyle(Templates.boldStyle),
+                                    cmp.horizontalGap(10),
+                                    cmp.text(totalUniqueBooksVar)
+                            ),
+                            cmp.horizontalList(
+                                    cmp.text("Total loans in library:").setStyle(Templates.boldStyle),
+                                    cmp.horizontalGap(10),
+                                    cmp.text(totalLoansVar)
+                            )
+                    )
+                    .setDataSource(jrDataSource)
+                    .show();
+        } catch (Exception e) {
+            System.out.println(e.getMessage());
+            JOptionPane.showMessageDialog(contentPane, "Report error: " + e.getMessage());
+            e.printStackTrace();
+        }
+    }
+
+    private List<CrosstabData> getCrosstabData() {
+        JdbcTemplate jdbcTemplate = new JdbcTemplate(dataSource);
+        String query = "SELECT " +
+                "   h.name AS hallName, " +
+                "   CONCAT(YEAR(l.issue_date), '-Q', QUARTER(l.issue_date)) AS issueQuarter, " +
+                "   l.loan_id AS loanId " +
+                "FROM loan l " +
+                "JOIN book b ON l.book_id = b.book_id " +
+                "JOIN hall h ON b.hall_id = h.hall_id " +
+                "WHERE l.issue_date IS NOT NULL " +
+                "ORDER BY issueQuarter";
+        return jdbcTemplate.query(query, new CrosstabDataMapper());
+    }
+
+    private void generateHallActivityCrosstabReport() {
+        try {
+            List<CrosstabData> crosstabData = getCrosstabData();
+            JRDataSource jrDataSource = new JRBeanCollectionDataSource(crosstabData);
+
+            CrosstabRowGroupBuilder<String> hallGroup = ctab.rowGroup("hallName", String.class)
+                    .setHeaderWidth(60)
+                    .setTotalHeader("Total in Quarter")
+                    .setHeaderStyle(Templates.headerCellStyle)
+                    .setTotalHeaderStyle(Templates.totalStyle);
+
+            CrosstabColumnGroupBuilder<String> quarterGroup = ctab.columnGroup("issueQuarter", String.class)
+                    .setTotalHeader("Total in Hall")
+                    .setHeaderStyle(Templates.headerCellStyle)
+                    .setTotalHeaderStyle(Templates.totalStyle);
+
+            CrosstabMeasureBuilder<Integer> loanCountMeasure = ctab.measure("loanId", Integer.class, Calculation.COUNT);
+
+            CrosstabBuilder crosstab = ctab.crosstab()
+                    .setCellWidth(50)
+                    .rowGroups(hallGroup)
+                    .columnGroups(quarterGroup)
+                    .measures(loanCountMeasure)
+                    .setCellStyle(Templates.cellStyle)
+                    .setGroupStyle(Templates.cellStyle)
+                    .setGroupTotalStyle(Templates.totalStyle)
+                    .setGrandTotalStyle(Templates.grandTotalStyle);
+
+            report()
+                    .title(cmp.text("Crosstab Report: Quaterly Activity by Hall").setStyle(Templates.boldCenteredStyle))
+                    .setColumnTitleStyle(Templates.columnTitleStyle)
+                    .summary(crosstab)
+                    .pageFooter(cmp.pageXofY())
+                    .setDataSource(jrDataSource)
+                    .show();
+        } catch (Exception e) {
+            System.out.println(e.getMessage());
+            JOptionPane.showMessageDialog(contentPane, "Report error: " + e.getMessage());
+            e.printStackTrace();
+        }
+    }
+
 
     {
 // GUI initializer generated by IntelliJ IDEA GUI Designer
@@ -815,10 +956,10 @@ public class DatabaseExplorer extends JFrame {
         librarianSimpleReportButton.setText("Generate a Simple Report on Librarians");
         panel13.add(librarianSimpleReportButton, new GridConstraints(0, 0, 1, 1, GridConstraints.ANCHOR_CENTER, GridConstraints.FILL_HORIZONTAL, GridConstraints.SIZEPOLICY_CAN_SHRINK | GridConstraints.SIZEPOLICY_CAN_GROW, GridConstraints.SIZEPOLICY_FIXED, null, null, null, 0, false));
         statisticReportButton = new JButton();
-        statisticReportButton.setText("Button");
+        statisticReportButton.setText("Generate a Statistic Report on Halls Loans");
         panel13.add(statisticReportButton, new GridConstraints(1, 0, 1, 1, GridConstraints.ANCHOR_CENTER, GridConstraints.FILL_HORIZONTAL, GridConstraints.SIZEPOLICY_CAN_SHRINK | GridConstraints.SIZEPOLICY_CAN_GROW, GridConstraints.SIZEPOLICY_FIXED, null, null, null, 0, false));
         crossReportButton = new JButton();
-        crossReportButton.setText("Button");
+        crossReportButton.setText("Generate a Crosstable Report on Halls and Loans");
         panel13.add(crossReportButton, new GridConstraints(2, 0, 1, 1, GridConstraints.ANCHOR_CENTER, GridConstraints.FILL_HORIZONTAL, GridConstraints.SIZEPOLICY_CAN_SHRINK | GridConstraints.SIZEPOLICY_CAN_GROW, GridConstraints.SIZEPOLICY_FIXED, null, null, null, 0, false));
     }
 

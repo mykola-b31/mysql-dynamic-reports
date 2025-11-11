@@ -1,5 +1,8 @@
 package ua.cn.stu.domain;
 
+import java.util.ArrayList;
+import java.util.List;
+
 public class Hall {
     private Integer hallId;
     private Integer floor;
